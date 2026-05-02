@@ -98,7 +98,21 @@ def test_health_and_models(settings: Settings) -> None:
 
 
 def test_chat_completion_maps_request_and_response(settings: Settings) -> None:
-    fake_client = FakeCherryClient()
+    fake_client = FakeCherryClient(
+        response={
+            "id": "chatcmpl-1",
+            "model": "qwen-upstream",
+            "object": "chat.completion",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "hello"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+    )
     app = create_app(settings, fake_client)
     client = app.test_client()
 
@@ -108,6 +122,8 @@ def test_chat_completion_maps_request_and_response(settings: Settings) -> None:
         "tools": [{"type": "function", "function": {"name": "fetchJson"}}],
         "tool_choice": "auto",
         "temperature": 0.2,
+        "response_format": {"type": "json_object"},
+        "extra_body": {"passthrough": True},
     }
     response = client.post("/v1/chat/completions", json=payload)
 
@@ -115,26 +131,26 @@ def test_chat_completion_maps_request_and_response(settings: Settings) -> None:
     assert fake_client.last_payload == {
         "model": "qwen",
         "messages": [{"role": "user", "content": "hi"}],
-        "stream": False,
         "tools": [{"type": "function", "function": {"name": "fetchJson"}}],
         "tool_choice": "auto",
         "temperature": 0.2,
+        "response_format": {"type": "json_object"},
+        "extra_body": {"passthrough": True},
     }
-    assert response.get_json()["model"] == "qwen"
-    assert response.get_json()["object"] == "chat.completion"
+    assert response.get_json() == fake_client.response
 
 
-def test_chat_completion_rejects_unknown_model(settings: Settings) -> None:
+def test_chat_completion_rejects_missing_model(settings: Settings) -> None:
     app = create_app(settings, FakeCherryClient())
     client = app.test_client()
 
     response = client.post(
         "/v1/chat/completions",
-        json={"model": "other", "messages": [{"role": "user", "content": "hi"}]},
+        json={"messages": [{"role": "user", "content": "hi"}]},
     )
 
     assert response.status_code == 400
-    assert response.get_json()["error"]["code"] == "model_not_found"
+    assert response.get_json()["error"]["code"] == "invalid_model"
 
 
 def test_models_can_map_public_name_to_upstream_name() -> None:
@@ -166,7 +182,24 @@ def test_models_can_map_public_name_to_upstream_name() -> None:
     ]
     assert chat_response.status_code == 200
     assert fake_client.last_payload["model"] == "GLM-4.5-Air"
-    assert chat_response.get_json()["model"] == "glm"
+    assert chat_response.get_json() == fake_client.response
+
+
+def test_unmapped_model_is_forwarded_as_is(settings: Settings) -> None:
+    fake_client = FakeCherryClient()
+    app = create_app(settings, fake_client)
+    client = app.test_client()
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "Qwen/Qwen3-8B",
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+
+    assert response.status_code == 200
+    assert fake_client.last_payload["model"] == "Qwen/Qwen3-8B"
 
 
 def test_streaming_chat_returns_sse_and_done(settings: Settings) -> None:
@@ -190,7 +223,7 @@ def test_streaming_chat_returns_sse_and_done(settings: Settings) -> None:
 
     assert response.status_code == 200
     assert response.mimetype == "text/event-stream"
-    assert 'data: {"id": "chatcmpl-1", "choices": [{"delta": {"content": "hi"}, "index": 0}], "model": "qwen", "object": "chat.completion.chunk"}' in body
+    assert 'data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"hi"},"index":0}]}' in body
     assert body.strip().endswith("data: [DONE]")
     assert fake_client.stream.closed is True
     assert fake_client.stream.close_calls == 1
@@ -281,12 +314,40 @@ def test_error_response_is_logged(settings: Settings, caplog: pytest.LogCaptureF
     with caplog.at_level("ERROR"):
         response = client.post(
             "/v1/chat/completions",
-            json={"model": "other", "messages": [{"role": "user", "content": "hi"}]},
+            json={"messages": [{"role": "user", "content": "hi"}]},
         )
 
     assert response.status_code == 400
     assert any("API request failed" in message for message in caplog.messages)
-    assert any("model_not_found" in message for message in caplog.messages)
+    assert any("invalid_model" in message for message in caplog.messages)
+
+
+def test_upstream_json_error_is_returned_as_is(settings: Settings) -> None:
+    class ErrorCherryClient(FakeCherryClient):
+        def create_chat_completion(self, payload: dict) -> dict:
+            from app.upstream import CherryUpstreamError
+
+            raise CherryUpstreamError(
+                "upstream bad request",
+                status_code=400,
+                error_type="invalid_request_error",
+                code="bad_request",
+                body={"error": {"message": "upstream bad request", "type": "invalid_request_error"}},
+                content_type="application/json; charset=utf-8",
+            )
+
+    app = create_app(settings, ErrorCherryClient())
+    client = app.test_client()
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={"model": "qwen", "messages": [{"role": "user", "content": "hi"}]},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json() == {
+        "error": {"message": "upstream bad request", "type": "invalid_request_error"}
+    }
 
 
 def test_sse_stream_is_logged_when_enabled(caplog: pytest.LogCaptureFixture) -> None:

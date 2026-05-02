@@ -7,8 +7,7 @@ from flask import Flask, Response, jsonify, request, stream_with_context
 from .auth import is_authorized
 from .config import Settings
 from .mappers import (
-    normalize_chat_completion_response,
-    normalize_stream_line,
+    format_stream_line_as_sse,
     to_cherry_payload,
 )
 from .upstream import CherryClient, CherryUpstreamError
@@ -104,14 +103,14 @@ def create_app(
             )
 
         model = payload.get("model")
-        upstream_model = settings.resolve_upstream_model(model)
-        if upstream_model is None:
+        if not isinstance(model, str) or not model.strip():
             return openai_error(
-                f"Unsupported model '{model}'. Available models: {', '.join(settings.public_models)}.",
+                "'model' must be a non-empty string.",
                 status_code=400,
                 error_type="invalid_request_error",
-                code="model_not_found",
+                code="invalid_model",
             )
+        upstream_model = settings.resolve_upstream_model(model) or model
 
         try:
             upstream_payload = to_cherry_payload(payload, upstream_model)
@@ -184,7 +183,7 @@ def create_app(
                             if settings.log_sse_stream:
                                 raw_line = line.decode("utf-8", errors="replace") if isinstance(line, bytes) else line
                                 app.logger.info("SSE upstream line=%s", safe_log_text(raw_line))
-                            normalized = normalize_stream_line(line, model)
+                            normalized = format_stream_line_as_sse(line)
                             if normalized is None:
                                 continue
                             if settings.log_sse_stream:
@@ -221,7 +220,7 @@ def create_app(
                 )
 
             response_body = cherry_client.create_chat_completion(upstream_payload)
-            return jsonify(normalize_chat_completion_response(response_body, model))
+            return json_response(response_body)
         except CherryUpstreamError as exc:
             app.logger.error(
                 "Cherry upstream error status=%s type=%s code=%s message=%s upstream_request=%s",
@@ -231,6 +230,8 @@ def create_app(
                 exc.message,
                 safe_log_json(upstream_payload),
             )
+            if exc.body is not None:
+                return upstream_error_response(exc)
             return openai_error(
                 exc.message,
                 status_code=exc.status_code,
@@ -259,6 +260,29 @@ def openai_error(
             }
         ),
         status_code,
+    )
+
+
+def json_response(payload: object, status_code: int = 200) -> Response:
+    return Response(
+        json.dumps(payload, ensure_ascii=False),
+        status=status_code,
+        content_type="application/json; charset=utf-8",
+    )
+
+
+def upstream_error_response(error: CherryUpstreamError) -> Response:
+    if isinstance(error.body, dict):
+        return Response(
+            json.dumps(error.body, ensure_ascii=False),
+            status=error.status_code,
+            content_type=error.content_type or "application/json; charset=utf-8",
+        )
+
+    return Response(
+        error.body,
+        status=error.status_code,
+        content_type=error.content_type or "text/plain; charset=utf-8",
     )
 
 

@@ -18,12 +18,16 @@ class CherryUpstreamError(Exception):
         status_code: int = 502,
         error_type: str = "api_error",
         code: str | None = None,
+        body: dict | str | None = None,
+        content_type: str | None = None,
     ) -> None:
         super().__init__(message)
         self.message = message
         self.status_code = status_code
         self.error_type = error_type
         self.code = code
+        self.body = body
+        self.content_type = content_type
 
 
 @dataclass
@@ -168,6 +172,7 @@ class CherryClient:
         message = f"Cherry upstream returned HTTP {response.status_code}."
         error_type = "api_error"
         code = None
+        body: dict | str | None = None
 
         try:
             response.read()
@@ -182,6 +187,7 @@ class CherryClient:
             payload = None
 
         if isinstance(payload, dict):
+            body = payload
             if isinstance(payload.get("error"), dict):
                 error = payload["error"]
                 message = error.get("message", message)
@@ -193,6 +199,7 @@ class CherryClient:
             try:
                 if response.text:
                     message = response.text
+                    body = response.text
             except httpx.ResponseNotRead:
                 pass
 
@@ -201,6 +208,8 @@ class CherryClient:
             status_code=response.status_code,
             error_type=error_type,
             code=code,
+            body=body,
+            content_type=response.headers.get("content-type"),
         )
 
 

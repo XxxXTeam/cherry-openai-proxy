@@ -1,6 +1,6 @@
 ## cherry-studio-qwen2api
 
-OpenAI-compatible Flask proxy for Cherry Studio `chat/completions`.
+OpenAI-compatible Flask proxy for Cherry Studio `chat/completions`, with minimal request/response rewriting.
 
 ### Features
 
@@ -11,6 +11,7 @@ OpenAI-compatible Flask proxy for Cherry Studio `chat/completions`.
 - Optional Bearer auth via `.env`
 - Cherry HMAC signature headers
 - JSON and SSE streaming support
+- Chat payloads and upstream responses are passed through as much as possible
 
 ### Quick start
 
