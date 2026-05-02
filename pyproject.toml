@@ -1,0 +1,16 @@
+[project]
+name = "cherry-studio-qwen2api"
+version = "0.1.0"
+description = "OpenAI-compatible proxy for Cherry Studio chat completions"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "flask>=3.1.0",
+    "httpx[http2]>=0.28.0",
+    "python-dotenv>=1.1.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.0",
+]
